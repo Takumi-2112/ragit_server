@@ -1,4 +1,6 @@
 import os
+import chromadb
+chromadb.telemetry.ENABLED = False
 from langchain.chains import create_history_aware_retriever, create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.documents import Document
@@ -7,7 +9,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_openai import AzureChatOpenAI, AzureOpenAIEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from app.ORIGINAL_pdf_converter import convert_PDF_to_markdown
+from ORIGINAL_pdf_converter import convert_PDF_to_markdown
 from config import (
     AZURE_OPENAI_ENDPOINT,
     AZURE_OPENAI_DEPLOYMENT_NAME,
@@ -100,6 +102,8 @@ model = AzureChatOpenAI(
     model="gpt-4o"
 )
 
+chat_history = []  # This is used to store the chat history in a sequence of messages
+
 # Contextualize question prompt
 # This system prompt helps the AI understand that it should reformulate the question based on the chat history
 contextualized_system_prompt = (
@@ -144,6 +148,7 @@ qa_prompt = ChatPromptTemplate.from_messages(
         ("human", "{input}"),
     ]
 )
+  
 
 # Create a chain to combine the documents for answering the question
 # This can be done by using create_stuff_documents_chain which feeds all retrieved context to the model
@@ -155,7 +160,6 @@ rag_chain = create_retrieval_chain(history_aware_retriever, question_answer_chai
 # Main chat loop function
 def continual_chat_function():
     print("Welcome back Mr. Azran. How may I be of assistance today sir?")
-    chat_history = []  # This is used to store the chat history in a sequence of messages
 
     # This loop will keep the chat going until the user types "exit"
     while True:
@@ -164,18 +168,32 @@ def continual_chat_function():
             print("Goodbye Mr. Azran. Have a great day!")
             break
 
-        # Process the user's query through the retrieval chain
-        result = rag_chain.invoke({"input": query, "chat_history": chat_history})
+        # # Process the user's query through the retrieval chain
+        # result = rag_chain.invoke({"input": query, "chat_history": chat_history})
 
-        # Clean up the output
-        clean_response = result["answer"].replace("▪", "•")  # Standardize bullet points
+        # # Clean up the output
+        # clean_response = result["answer"].replace("▪", "•")  # Standardize bullet points
 
-        # Display the AI's response
-        print(f"\nAI: {clean_response}\n")  # Add spacing for readability
+        # # Display the AI's response
+        # print(f"\nAI: {clean_response}\n")  # Add spacing for readability
 
-        # Update the chat history
-        chat_history.append(HumanMessage(content=query))
-        chat_history.append(SystemMessage(content=result["answer"]))
+        # # Update the chat history
+        # chat_history.append(HumanMessage(content=query))
+        # chat_history.append(SystemMessage(content=result["answer"]))
+        
+def chatbot_talk(prompt):
+    # Process the user's prompt through the retrieval chain
+    result = rag_chain.invoke({"input": prompt, "chat_history": chat_history})
+
+    # Clean up the output
+    clean_response = result["answer"].replace("▪", "•")  # Standardize bullet points
+
+    # Display the AI's response
+    print(f"\nAI: {clean_response}\n")  # Add spacing for readability
+
+    # Update the chat history
+    chat_history.append(HumanMessage(content=prompt))
+    chat_history.append(SystemMessage(content=result["answer"]))
 
 # Entry point
 if __name__ == "__main__":
