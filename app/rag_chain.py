@@ -194,6 +194,7 @@ def chatbot_talk(prompt):
     # Update the chat history
     chat_history.append(HumanMessage(content=prompt))
     chat_history.append(SystemMessage(content=result["answer"]))
+    return clean_response
 
 # Entry point
 if __name__ == "__main__":
