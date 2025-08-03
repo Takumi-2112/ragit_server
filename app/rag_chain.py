@@ -1,6 +1,7 @@
 import os
 import chromadb
 chromadb.telemetry.ENABLED = False
+
 from langchain.chains import create_history_aware_retriever, create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.documents import Document
@@ -9,6 +10,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_openai import AzureChatOpenAI, AzureOpenAIEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
+from webcrawler import webcrawl
 from ORIGINAL_pdf_converter import convert_PDF_to_markdown
 from config import (
     AZURE_OPENAI_ENDPOINT,
@@ -154,33 +156,43 @@ qa_prompt = ChatPromptTemplate.from_messages(
 # This can be done by using create_stuff_documents_chain which feeds all retrieved context to the model
 question_answer_chain = create_stuff_documents_chain(model, qa_prompt)
 
+#URL ingestions
+def url_to_vectorstore(url):
+  # use webcrawler function from webcrawler.py
+  content = webcrawl(url)
+  
+  if not content:
+    print(f"Failed to retrieve content from {url}")
+    return
+  
+  # wrap the content in the langchain document format
+  document = Document(
+      page_content=content,
+      metadata={"source": url}
+  )
+  
+  # split the document into chunks
+  text_splitter = RecursiveCharacterTextSplitter(
+      chunk_size=1000,
+      chunk_overlap=200,
+      separators=["\n\n", "\n", " ", ""]
+  )
+  
+  # split the document chunks
+  split_docs = text_splitter.split_documents([document])
+  
+  # add the chunks to the vectorstore
+  vectorstore.add_documents(split_docs)
+  # ensure the vectorstore is persisted
+  vectorstore.persist()
+  
+  print(f"Successfully added content from {url} to the vectorstore.")
+  
+
+
 # Create a retrieval chain that combines the history-aware retriever and the question answering chain
 rag_chain = create_retrieval_chain(history_aware_retriever, question_answer_chain)
 
-# Main chat loop function
-def continual_chat_function():
-    print("Welcome back Mr. Azran. How may I be of assistance today sir?")
-
-    # This loop will keep the chat going until the user types "exit"
-    while True:
-        query = input("You: ")
-        if query.lower() == "exit":
-            print("Goodbye Mr. Azran. Have a great day!")
-            break
-
-        # # Process the user's query through the retrieval chain
-        # result = rag_chain.invoke({"input": query, "chat_history": chat_history})
-
-        # # Clean up the output
-        # clean_response = result["answer"].replace("▪", "•")  # Standardize bullet points
-
-        # # Display the AI's response
-        # print(f"\nAI: {clean_response}\n")  # Add spacing for readability
-
-        # # Update the chat history
-        # chat_history.append(HumanMessage(content=query))
-        # chat_history.append(SystemMessage(content=result["answer"]))
-        
 def chatbot_talk(prompt):
     # Process the user's prompt through the retrieval chain
     result = rag_chain.invoke({"input": prompt, "chat_history": chat_history})
@@ -198,4 +210,29 @@ def chatbot_talk(prompt):
 
 # Entry point
 if __name__ == "__main__":
-    continual_chat_function()
+    chatbot_talk()
+
+# # Main chat loop function
+# def continual_chat_function():
+#     print("Welcome back Mr. Azran. How may I be of assistance today sir?")
+
+#     # This loop will keep the chat going until the user types "exit"
+#     while True:
+#         query = input("You: ")
+#         if query.lower() == "exit":
+#             print("Goodbye Mr. Azran. Have a great day!")
+#             break
+
+#         # # Process the user's query through the retrieval chain
+#         # result = rag_chain.invoke({"input": query, "chat_history": chat_history})
+
+#         # # Clean up the output
+#         # clean_response = result["answer"].replace("▪", "•")  # Standardize bullet points
+
+#         # # Display the AI's response
+#         # print(f"\nAI: {clean_response}\n")  # Add spacing for readability
+
+#         # # Update the chat history
+#         # chat_history.append(HumanMessage(content=query))
+#         # chat_history.append(SystemMessage(content=result["answer"]))
+        
