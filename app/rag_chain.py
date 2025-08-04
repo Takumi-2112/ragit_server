@@ -11,7 +11,6 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_openai import AzureChatOpenAI, AzureOpenAIEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from webcrawler import webcrawl
-from ORIGINAL_pdf_converter import convert_PDF_to_markdown
 from config import (
     AZURE_OPENAI_ENDPOINT,
     AZURE_OPENAI_DEPLOYMENT_NAME,
@@ -41,6 +40,12 @@ markdown_folder_path = os.path.join(current_dir, "markdown")
 
 
 # Check if vectorstore exists to avoid re-indexing
+# Ensure markdown folder exists
+if not os.path.exists(markdown_folder_path):
+    print(f"Markdown folder not found at {markdown_folder_path}, creating it.")
+    os.makedirs(markdown_folder_path)
+
+# Check if vectorstore already exists
 if os.path.exists(db_folder_path) and os.listdir(db_folder_path):
     print("Loading existing vectorstore...")
     vectorstore = Chroma(
@@ -48,44 +53,46 @@ if os.path.exists(db_folder_path) and os.listdir(db_folder_path):
         embedding_function=embeddings
     )
 else:
-    print("Creating new vectorstore...")
-    
-    # Define the path to your local markdown folder  
-    if not os.path.exists(markdown_folder_path):
-        raise ValueError(f"Markdown folder not found at {markdown_folder_path}")
-      
+    print("Initializing vectorstore...")
+
     markdown_documents = []
 
-    # Loop through all PDFs in the folder and convert to Markdown
+    # Scan markdown folder for .md files
     for filename in os.listdir(markdown_folder_path):
-      if filename.lower().endswith(".md"):
-        full_path = os.path.join(markdown_folder_path, filename)
-        with open(full_path, "r", encoding="utf-8") as f:
-            markdown_content = f.read()
-            # Attach source metadata to each document
-            markdown_documents.append(Document(
-                page_content=markdown_content,
-                metadata={"source": filename}
-            ))
+        if filename.lower().endswith(".md"):
+            full_path = os.path.join(markdown_folder_path, filename)
+            with open(full_path, "r", encoding="utf-8") as f:
+                content = f.read().strip()
+                if content:
+                    markdown_documents.append(Document(
+                        page_content=content,
+                        metadata={"source": filename}
+                    ))
+                else:
+                    print(f"Skipping empty file: {filename}")
 
-    # Split the markdown into better chunks
-    text_splitter = RecursiveCharacterTextSplitter(
-      chunk_size=1000,
-      chunk_overlap=200,
-      separators=["\n\n## ", "\n##", "\n#", "\n\n", "\n", "  ", " ", ""]
-    ) 
+    # Only create vectorstore if there's content, otherwise create empty one
+    if markdown_documents:
+        print(f"Creating vectorstore with {len(markdown_documents)} markdown files...")
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=1000,
+            chunk_overlap=200,
+            separators=["\n\n## ", "\n##", "\n#", "\n\n", "\n", "  ", " ", ""]
+        )
+        documents = text_splitter.split_documents(markdown_documents)
 
-    # Split the document
-    documents = text_splitter.split_documents(markdown_documents)
-
-    # Create a Chroma vectorstore from the markdown content
-    # The vectorstore is used to store the embeddings of the text chunks
-    # The embeddings are used to find similar text chunks based on the user's query
-    vectorstore = Chroma.from_documents(
-        documents=documents,
-        embedding=embeddings,
-        persist_directory=db_folder_path
-    )
+        vectorstore = Chroma.from_documents(
+            documents=documents,
+            embedding=embeddings,
+            persist_directory=db_folder_path
+        )
+    else:
+        print("No markdown files found. Creating empty vectorstore...")
+        # Create empty vectorstore without trying to add empty documents
+        vectorstore = Chroma(
+            persist_directory=db_folder_path,
+            embedding_function=embeddings
+        )
 
 # Create a retriever for querying the vectorstore
 # search_type specifies the type of search to perform (e.g. "similarity")
@@ -158,35 +165,36 @@ question_answer_chain = create_stuff_documents_chain(model, qa_prompt)
 
 #URL ingestions
 def url_to_vectorstore(url):
-  # use webcrawler function from webcrawler.py
-  content = webcrawl(url)
-  
-  if not content:
-    print(f"Failed to retrieve content from {url}")
-    return
-  
-  # wrap the content in the langchain document format
-  document = Document(
-      page_content=content,
-      metadata={"source": url}
-  )
-  
-  # split the document into chunks
-  text_splitter = RecursiveCharacterTextSplitter(
-      chunk_size=1000,
-      chunk_overlap=200,
-      separators=["\n\n", "\n", " ", ""]
-  )
-  
-  # split the document chunks
-  split_docs = text_splitter.split_documents([document])
-  
-  # add the chunks to the vectorstore
-  vectorstore.add_documents(split_docs)
-  # ensure the vectorstore is persisted
-  vectorstore.persist()
-  
-  print(f"Successfully added content from {url} to the vectorstore.")
+    # use webcrawler function from webcrawler.py
+    content = webcrawl(url)
+    
+    if not content:
+        print(f"Failed to retrieve content from {url}")
+        return False
+    
+    # wrap the content in the langchain document format
+    document = Document(
+        page_content=content,
+        metadata={"source": url}
+    )
+    
+    # split the document into chunks
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1000,
+        chunk_overlap=200,
+        separators=["\n\n", "\n", " ", ""]
+    )
+    
+    # split the document chunks
+    split_docs = text_splitter.split_documents([document])
+    
+    # add the chunks to the vectorstore
+    vectorstore.add_documents(split_docs)
+    # Remove the persist() call - it's no longer needed in newer ChromaDB versions
+    # vectorstore.persist()  # <- This line causes the error
+    
+    print(f"Successfully added content from {url} to the vectorstore.")
+    return True
   
 
 
@@ -207,6 +215,9 @@ def chatbot_talk(prompt):
     chat_history.append(HumanMessage(content=prompt))
     chat_history.append(SystemMessage(content=result["answer"]))
     return clean_response
+
+# Export vectorstore for use in server.py
+__all__ = ['chatbot_talk', 'vectorstore', 'url_to_vectorstore']
 
 # Entry point
 if __name__ == "__main__":
@@ -235,4 +246,3 @@ if __name__ == "__main__":
 #         # # Update the chat history
 #         # chat_history.append(HumanMessage(content=query))
 #         # chat_history.append(SystemMessage(content=result["answer"]))
-        
