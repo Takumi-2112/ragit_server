@@ -29,79 +29,6 @@ embeddings = AzureOpenAIEmbeddings(
     openai_api_version="2024-05-01-preview"
 )
 
-# Define the path to your vector store
-current_dir = os.path.dirname(os.path.abspath(__file__))
-
-# Define the path to the folder where the vectorstore will be stored
-db_folder_path = os.path.join(current_dir, "db", "chroma_vectorstore")
-
-# Define the path to your local markdown folder
-markdown_folder_path = os.path.join(current_dir, "markdown")
-
-
-# Check if vectorstore exists to avoid re-indexing
-# Ensure markdown folder exists
-if not os.path.exists(markdown_folder_path):
-    print(f"Markdown folder not found at {markdown_folder_path}, creating it.")
-    os.makedirs(markdown_folder_path)
-
-# Check if vectorstore already exists
-if os.path.exists(db_folder_path) and os.listdir(db_folder_path):
-    print("Loading existing vectorstore...")
-    vectorstore = Chroma(
-        persist_directory=db_folder_path,
-        embedding_function=embeddings
-    )
-else:
-    print("Initializing vectorstore...")
-
-    markdown_documents = []
-
-    # Scan markdown folder for .md files
-    for filename in os.listdir(markdown_folder_path):
-        if filename.lower().endswith(".md"):
-            full_path = os.path.join(markdown_folder_path, filename)
-            with open(full_path, "r", encoding="utf-8") as f:
-                content = f.read().strip()
-                if content:
-                    markdown_documents.append(Document(
-                        page_content=content,
-                        metadata={"source": filename}
-                    ))
-                else:
-                    print(f"Skipping empty file: {filename}")
-
-    # Only create vectorstore if there's content, otherwise create empty one
-    if markdown_documents:
-        print(f"Creating vectorstore with {len(markdown_documents)} markdown files...")
-        text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1000,
-            chunk_overlap=200,
-            separators=["\n\n## ", "\n##", "\n#", "\n\n", "\n", "  ", " ", ""]
-        )
-        documents = text_splitter.split_documents(markdown_documents)
-
-        vectorstore = Chroma.from_documents(
-            documents=documents,
-            embedding=embeddings,
-            persist_directory=db_folder_path
-        )
-    else:
-        print("No markdown files found. Creating empty vectorstore...")
-        # Create empty vectorstore without trying to add empty documents
-        vectorstore = Chroma(
-            persist_directory=db_folder_path,
-            embedding_function=embeddings
-        )
-
-# Create a retriever for querying the vectorstore
-# search_type specifies the type of search to perform (e.g. "similarity")
-# search_kwargs specifies additional parameters for the search (e.g. number of results to return)
-retriever = vectorstore.as_retriever(
-    search_type="similarity",
-    search_kwargs={"k": 3}
-)
-
 # Create an AzureChatOpenAI model instance
 model = AzureChatOpenAI(
     azure_endpoint=AZURE_OPENAI_ENDPOINT,
@@ -111,17 +38,16 @@ model = AzureChatOpenAI(
     model="gpt-4o"
 )
 
-chat_history = []  # This is used to store the chat history in a sequence of messages
+# Store chat histories per user
+user_chat_histories = {}
 
 # Contextualize question prompt
-# This system prompt helps the AI understand that it should reformulate the question based on the chat history
 contextualized_system_prompt = (
     "Given a chat history and the latest user question which might reference context in the chat history, "
     "formulate a standalone question which can be understood without the chat history. "
     "Do NOT answer the question, just reformulate it if needed and otherwise return it as is."
 )
 
-# Create a prompt template for contextualizing the question
 contextualize_prompt = ChatPromptTemplate.from_messages(
     [
         ("system", contextualized_system_prompt),
@@ -130,14 +56,7 @@ contextualize_prompt = ChatPromptTemplate.from_messages(
     ]
 )
 
-# Create a history aware retriever
-# This will use the LLM to help reformulate the question based on the chat history
-history_aware_retriever = create_history_aware_retriever(
-    model, retriever, contextualize_prompt
-)
-
 # Answer the question prompt
-# This system prompt helps the AI understand that it should answer the question based on the retrieved documents
 qa_system_prompt = (
     "You are a professional assistant. Provide concise, professional answers "
     "based strictly on the provided context. Format responses clearly with:\n"
@@ -149,7 +68,6 @@ qa_system_prompt = (
     "Context:\n{context}"
 )
 
-# Create a prompt template for answering the question
 qa_prompt = ChatPromptTemplate.from_messages(
     [
         ("system", qa_system_prompt),
@@ -157,92 +75,167 @@ qa_prompt = ChatPromptTemplate.from_messages(
         ("human", "{input}"),
     ]
 )
-  
 
-# Create a chain to combine the documents for answering the question
-# This can be done by using create_stuff_documents_chain which feeds all retrieved context to the model
-question_answer_chain = create_stuff_documents_chain(model, qa_prompt)
+def get_user_vectorstore(user_id):
+    """
+    Get or create a user-specific vectorstore
+    """
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    db_folder_path = os.path.join(current_dir, "db", "vectorstores", f"user_{user_id}_vectorstore")
+    
+    # Ensure the directory exists
+    os.makedirs(db_folder_path, exist_ok=True)
+    
+    # Check if vectorstore already exists
+    if os.path.exists(db_folder_path) and os.listdir(db_folder_path):
+        print(f"Loading existing vectorstore for user {user_id}...")
+        vectorstore = Chroma(
+            persist_directory=db_folder_path,
+            embedding_function=embeddings
+        )
+    else:
+        print(f"Creating new vectorstore for user {user_id}...")
+        # Create empty vectorstore
+        vectorstore = Chroma(
+            persist_directory=db_folder_path,
+            embedding_function=embeddings
+        )
+        
+        # Check for markdown files in the general markdown folder to initialize with
+        markdown_folder_path = os.path.join(current_dir, "markdown")
+        if os.path.exists(markdown_folder_path):
+            markdown_documents = []
+            for filename in os.listdir(markdown_folder_path):
+                if filename.lower().endswith(".md"):
+                    full_path = os.path.join(markdown_folder_path, filename)
+                    with open(full_path, "r", encoding="utf-8") as f:
+                        content = f.read().strip()
+                        if content:
+                            markdown_documents.append(Document(
+                                page_content=content,
+                                metadata={"source": filename}
+                            ))
+            
+            # Add markdown documents to the new user's vectorstore if any exist
+            if markdown_documents:
+                print(f"Initializing user {user_id} vectorstore with {len(markdown_documents)} markdown files...")
+                text_splitter = RecursiveCharacterTextSplitter(
+                    chunk_size=1000,
+                    chunk_overlap=200,
+                    separators=["\n\n## ", "\n##", "\n#", "\n\n", "\n", "  ", " ", ""]
+                )
+                documents = text_splitter.split_documents(markdown_documents)
+                vectorstore.add_documents(documents)
+    
+    return vectorstore
 
-#URL ingestions
-def url_to_vectorstore(url):
-    # use webcrawler function from webcrawler.py
+def get_user_chat_history(user_id):
+    """
+    Get or create chat history for a specific user
+    """
+    if user_id not in user_chat_histories:
+        user_chat_histories[user_id] = []
+    return user_chat_histories[user_id]
+
+def create_rag_chain_for_user(user_id):
+    """
+    Create a RAG chain for a specific user
+    """
+    vectorstore = get_user_vectorstore(user_id)
+    
+    retriever = vectorstore.as_retriever(
+        search_type="similarity",
+        search_kwargs={"k": 3}
+    )
+    
+    history_aware_retriever = create_history_aware_retriever(
+        model, retriever, contextualize_prompt
+    )
+    
+    question_answer_chain = create_stuff_documents_chain(model, qa_prompt)
+    
+    rag_chain = create_retrieval_chain(history_aware_retriever, question_answer_chain)
+    
+    return rag_chain
+
+def url_to_vectorstore(url, user_id):
+    """
+    Add URL content to a user-specific vectorstore
+    """
     content = webcrawl(url)
     
     if not content:
         print(f"Failed to retrieve content from {url}")
         return False
     
-    # wrap the content in the langchain document format
+    # Get the user's vectorstore
+    vectorstore = get_user_vectorstore(user_id)
+    
+    # Wrap the content in the langchain document format
     document = Document(
         page_content=content,
         metadata={"source": url}
     )
     
-    # split the document into chunks
+    # Split the document into chunks
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=1000,
         chunk_overlap=200,
         separators=["\n\n", "\n", " ", ""]
     )
     
-    # split the document chunks
     split_docs = text_splitter.split_documents([document])
     
-    # add the chunks to the vectorstore
+    # Add the chunks to the user's vectorstore
     vectorstore.add_documents(split_docs)
-    # Remove the persist() call - it's no longer needed in newer ChromaDB versions
-    # vectorstore.persist()  # <- This line causes the error
     
-    print(f"Successfully added content from {url} to the vectorstore.")
+    print(f"Successfully added content from {url} to user {user_id}'s vectorstore.")
     return True
-  
 
 
-# Create a retrieval chain that combines the history-aware retriever and the question answering chain
-rag_chain = create_retrieval_chain(history_aware_retriever, question_answer_chain)
 
-def chatbot_talk(prompt):
+def chatbot_talk(prompt, user_id):
+    """
+    Process a chat message for a specific user
+    """
+    # Get the user's chat history
+    chat_history = get_user_chat_history(user_id)
+    
+    # Create RAG chain for this user
+    rag_chain = create_rag_chain_for_user(user_id)
+    
     # Process the user's prompt through the retrieval chain
     result = rag_chain.invoke({"input": prompt, "chat_history": chat_history})
 
     # Clean up the output
-    clean_response = result["answer"].replace("▪", "•")  # Standardize bullet points
+    clean_response = result["answer"].replace("▪", "•")
 
-    # Display the AI's response
-    print(f"\nAI: {clean_response}\n")  # Add spacing for readability
+    # Display the AI's response (for debugging)
+    print(f"\nAI response for user {user_id}: {clean_response}\n")
 
-    # Update the chat history
+    # Update the user's chat history
     chat_history.append(HumanMessage(content=prompt))
     chat_history.append(SystemMessage(content=result["answer"]))
+    
     return clean_response
 
-# Export vectorstore for use in server.py
-__all__ = ['chatbot_talk', 'vectorstore', 'url_to_vectorstore']
 
-# Entry point
+
+# Export functions for use in server.py
+__all__ = ['chatbot_talk', 'url_to_vectorstore', 'get_user_vectorstore']
+
+# Entry point for standalone usage
 if __name__ == "__main__":
-    chatbot_talk()
-
-# # Main chat loop function
-# def continual_chat_function():
-#     print("Welcome back Mr. Azran. How may I be of assistance today sir?")
-
-#     # This loop will keep the chat going until the user types "exit"
-#     while True:
-#         query = input("You: ")
-#         if query.lower() == "exit":
-#             print("Goodbye Mr. Azran. Have a great day!")
-#             break
-
-#         # # Process the user's query through the retrieval chain
-#         # result = rag_chain.invoke({"input": query, "chat_history": chat_history})
-
-#         # # Clean up the output
-#         # clean_response = result["answer"].replace("▪", "•")  # Standardize bullet points
-
-#         # # Display the AI's response
-#         # print(f"\nAI: {clean_response}\n")  # Add spacing for readability
-
-#         # # Update the chat history
-#         # chat_history.append(HumanMessage(content=query))
-#         # chat_history.append(SystemMessage(content=result["answer"]))
+    # For testing purposes, use default user
+    test_user_id = "default"
+    
+    print(f"Welcome! Testing RAG system for user {test_user_id}")
+    
+    while True:
+        query = input("You: ")
+        if query.lower() == "exit":
+            print("Goodbye!")
+            break
+        
+        response = chatbot_talk(query, test_user_id)
+        print(f"AI: {response}")

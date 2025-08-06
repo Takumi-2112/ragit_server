@@ -1,5 +1,5 @@
 .env
-db
 pdf
 venv
 markdown
+__pycache__
