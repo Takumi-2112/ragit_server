@@ -4,7 +4,7 @@ from rag_chain import chatbot_talk, url_to_vectorstore
 from pdf_converter import add_pdf_to_vectorstore
 import os
 from werkzeug.utils import secure_filename
-from werkzeug.security import generate_password_hash
+from werkzeug.security import generate_password_hash, check_password_hash
 from db.conection import get_db_connection, execute_query, close_connection  
 from db.queries.users import (
     create_new_user_query,
@@ -19,19 +19,81 @@ from db.queries.users import (
     delete_user_query
 )
 
+# JWT imports
+import jwt
+from datetime import datetime, timedelta
+from functools import wraps
+
 app = Flask(__name__)
+
+# JWT Configuration (use environment variable in production)
+JWT_SECRET = "your-secret-key-here"  # Move to config.py or .env in production
 
 # Configure CORS properly
 CORS(
     app,
     resources={
-        r"/message": {
+        r"/*": {
             "origins": ["http://localhost:5173"],
-            "methods": ["POST"],
-            "allow_headers": ["Content-Type"]
+            "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+            "allow_headers": ["Content-Type", "Authorization"]
         }
     }
 )
+
+# JWT Helper Functions
+def generate_jwt_token(user_id, username):
+    """Generate JWT token for authenticated user"""
+    payload = {
+        'user_id': user_id,
+        'username': username,
+        'exp': datetime.utcnow() + timedelta(hours=24)  # Token expires in 24 hours
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm='HS256')
+
+def verify_jwt_token(token):
+    """Verify and decode JWT token"""
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=['HS256'])
+        return payload
+    except jwt.ExpiredSignatureError:
+        return None  # Token expired
+    except jwt.InvalidTokenError:
+        return None  # Invalid token
+
+def require_auth(f):
+    """Decorator to require authentication for routes"""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        # Handle OPTIONS requests for CORS
+        if request.method == 'OPTIONS':
+            response = jsonify({"status": "preflight"})
+            response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
+            response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+            response.headers.add('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
+            return response
+        
+        # Get token from Authorization header
+        auth_header = request.headers.get('Authorization')
+        if not auth_header or not auth_header.startswith('Bearer '):
+            error_response = jsonify({"error": "Authentication required"})
+            error_response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
+            return error_response, 401
+        
+        token = auth_header.split(' ')[1]
+        payload = verify_jwt_token(token)
+        
+        if not payload:
+            error_response = jsonify({"error": "Invalid or expired token"})
+            error_response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
+            return error_response, 401
+        
+        # Add user info to request context
+        request.user_id = payload['user_id']
+        request.username = payload['username']
+        
+        return f(*args, **kwargs)
+    return decorated_function
 
 @app.route('/')
 def home():
@@ -39,9 +101,7 @@ def home():
   
 @app.route('/register', methods=['POST', 'OPTIONS'])
 def register_user():
-  # this ensures that the server can handle preflight requests
-  # which are sent by the browser before the actual POST request
-  # to check if the server accepts the request 
+    # Handle preflight requests
     if request.method == 'OPTIONS':
         response = jsonify({"status": "preflight"})
         response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
@@ -50,35 +110,16 @@ def register_user():
         return response
     
     try:
-        # Get JSON data from the request
-        # This is where the frontend sends the user registration data
-        # e.g. { "username": "testuser", "email": "test@example.com", "password": "securepassword" }
         data = request.get_json()
         
-        # if data is None or missing required fields, return an error response
-        # this is to ensure that the request contains the necessary information
         if not data or 'username' not in data or 'email' not in data or 'password' not in data:
             error_response = jsonify({"error": "Missing required fields: username, email, password"})
             error_response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
             return error_response, 400
         
-        # Extract and sanitize user input
-        # This is to prevent SQL injection and ensure that the data is clean
         username = data['username'].strip()
         email = data['email'].strip().lower()
         password = data['password']
-        
-        # Basic validation
-        # Uncomment these lines if you want to enforce minimum length for username and password
-        # if len(username) < 3:
-        #     error_response = jsonify({"error": "Username must be at least 3 characters long"})
-        #     error_response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
-        #     return error_response, 400
-            
-        # if len(password) < 6:
-        #     error_response = jsonify({"error": "Password must be at least 6 characters long"})
-        #     error_response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
-        #     return error_response, 400
         
         # Check if username already exists
         existing_username_query = get_user_by_username_query()
@@ -100,19 +141,16 @@ def register_user():
         password_hash = generate_password_hash(password)
         
         # Create vectorstore path for the new user
-        # We'll use a temporary ID pattern, then update after user creation
-        # its temporary because we don't have the user ID yet
         temp_vectorstore_path = f"db/vectorstores/temp_user_vectorstore"
         
         # Create new user in the database
         query = create_new_user_query()
         result = execute_query(query, params=(username, email, password_hash, temp_vectorstore_path), fetch_one=True)
         
-        # If user creation was successful, result should contain the new user's ID
         if result and 'id' in result:
             user_id = result['id']
             
-            # Update vectorstore path with actual user ID once we have it
+            # Update vectorstore path with actual user ID
             actual_vectorstore_path = f"db/vectorstores/user_{user_id}_vectorstore"
             
             # Create the vectorstore directory
@@ -126,8 +164,12 @@ def register_user():
             """
             execute_query(update_query, params=(actual_vectorstore_path, user_id))
             
+            # Generate JWT token for immediate login
+            token = generate_jwt_token(user_id, username)
+            
             success_response = jsonify({
                 "message": "User registered successfully",
+                "token": token,
                 "user_id": user_id,
                 "username": username
             })
@@ -174,15 +216,18 @@ def login_user():
             return error_response, 401
         
         # Verify password
-        from werkzeug.security import check_password_hash
         if not check_password_hash(user['password_hash'], password):
             error_response = jsonify({"error": "Invalid username or password"})
             error_response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
             return error_response, 401
         
+        # Generate JWT token
+        token = generate_jwt_token(user['id'], user['username'])
+        
         # Successful login
         success_response = jsonify({
             "message": "Login successful",
+            "token": token,
             "user_id": user['id'],
             "username": user['username']
         })
@@ -196,33 +241,28 @@ def login_user():
         return error_response, 500
 
 @app.route('/upload-pdf', methods=['POST', 'OPTIONS'])
+@require_auth
 def upload_pdf():
-    if request.method == 'OPTIONS':
-        response = jsonify({"status": "preflight"})
-        response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
-        response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
-        response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
-        return response
-    
     try:
         # Check if file is in the request
         if 'file' not in request.files:
-            return jsonify({'error': 'No file provided'}), 400
-        
-        # Get user_id from form data or JSON
-        user_id = request.form.get('user_id')
-        if not user_id:
-            return jsonify({'error': 'User ID is required'}), 400
+            error_response = jsonify({'error': 'No file provided'})
+            error_response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
+            return error_response, 400
         
         file = request.files['file']
         
         # Check if file was actually selected
         if file.filename == '':
-            return jsonify({'error': 'No file selected'}), 400
+            error_response = jsonify({'error': 'No file selected'})
+            error_response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
+            return error_response, 400
         
         # Check if it's a PDF file
         if not file.filename.lower().endswith('.pdf'):
-            return jsonify({'error': 'File must be a PDF'}), 400
+            error_response = jsonify({'error': 'File must be a PDF'})
+            error_response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
+            return error_response, 400
         
         # Create pdf folder if it doesn't exist
         current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -237,7 +277,8 @@ def upload_pdf():
         file.save(file_path)
         print(f"PDF saved to: {file_path}")
         
-        # Process the PDF and add to user's vectorstore
+        # Use user_id from JWT token
+        user_id = request.user_id
         success = add_pdf_to_vectorstore(file_path, filename, user_id)
         
         if success:
@@ -253,7 +294,6 @@ def upload_pdf():
                 'status': 'partial_success'
             })
         
-        # Add CORS headers
         response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
         return response, 200
         
@@ -263,32 +303,16 @@ def upload_pdf():
         error_response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
         return error_response, 500
 
-
 @app.route('/ingest-url', methods=['POST', 'OPTIONS'])
+@require_auth
 def ingest_url():
-    if request.method == 'OPTIONS':
-        response = jsonify({"status": "preflight"})
-        response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
-        response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
-        response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
-        return response
-    
     try:
-        # Get the JSON data from the request
         data = request.get_json()
         
-        # Extract the URL and user_id from the request data
         url = data.get('url')
-        user_id = data.get('user_id')
         
-        # Validate that both URL and user_id were provided
         if not url:
             error_response = jsonify({'error': 'URL is required'})
-            error_response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
-            return error_response, 400
-            
-        if not user_id:
-            error_response = jsonify({'error': 'User ID is required'})
             error_response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
             return error_response, 400
         
@@ -298,7 +322,8 @@ def ingest_url():
             error_response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
             return error_response, 400
         
-        # Process the URL and add to user's vectorstore
+        # Use user_id from JWT token
+        user_id = request.user_id
         success = url_to_vectorstore(url, user_id)
         
         if success:
@@ -321,25 +346,19 @@ def ingest_url():
         error_response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
         return error_response, 500
 
-
 @app.route('/message', methods=['POST', 'OPTIONS'])
+@require_auth
 def message():
-    if request.method == 'OPTIONS':
-        response = jsonify({"status": "preflight"})
-        response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
-        response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
-        return response
-
     data = request.get_json()
 
     if not data or 'message' not in data:
-        return jsonify({"error": "No message provided"}), 400
-    
-    if 'user_id' not in data:
-        return jsonify({"error": "User ID is required"}), 400
+        error_response = jsonify({"error": "No message provided"})
+        error_response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
+        return error_response, 400
 
     user_message = data['message']
-    user_id = data['user_id']
+    # Use user_id from JWT token instead of request body
+    user_id = request.user_id
 
     # Send message to AI setup function with user_id
     ai_response = chatbot_talk(user_message, user_id)
@@ -348,8 +367,65 @@ def message():
         "message": ai_response
     })
     
-    # Add CORS headers to the actual response
     response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
     return response
+
+# Logout endpoint
+@app.route('/logout', methods=['POST', 'OPTIONS'])
+@require_auth
+def logout():
+    if request.method == 'OPTIONS':
+        response = jsonify({"status": "preflight"})
+        response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
+        return response
+    
+    try:
+        # Since JWT is stateless, we mainly just confirm the logout
+        # In the future, you could add token blacklisting here if needed
+        username = request.username
+        
+        response = jsonify({
+            "message": f"User {username} logged out successfully",
+            "status": "success"
+        })
+        response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
+        return response, 200
+        
+    except Exception as e:
+        print(f"Error during logout: {str(e)}")
+        error_response = jsonify({"error": "Logout failed due to server error"})
+        error_response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
+        return error_response, 500
+
+# Optional: Add token refresh endpoint
+@app.route('/refresh-token', methods=['POST', 'OPTIONS'])
+@require_auth
+def refresh_token():
+    if request.method == 'OPTIONS':
+        response = jsonify({"status": "preflight"})
+        response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
+        return response
+    
+    try:
+        # Generate new token with extended expiration
+        new_token = generate_jwt_token(request.user_id, request.username)
+        
+        response = jsonify({
+            "message": "Token refreshed successfully",
+            "token": new_token
+        })
+        response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
+        return response, 200
+        
+    except Exception as e:
+        print(f"Error refreshing token: {str(e)}")
+        error_response = jsonify({"error": "Token refresh failed"})
+        error_response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
+        return error_response, 500
+
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=8080)  # Fixed host parameter
+    app.run(debug=True, host='0.0.0.0', port=8080)

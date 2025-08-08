@@ -15,6 +15,7 @@ DB_USER = os.getenv("DB_USER")
 DB_PASSWORD = os.getenv("DB_PASSWORD")
 DB_HOST = os.getenv("DB_HOST")
 DB_PORT = os.getenv("DB_PORT")
+JWT_SECRET = os.getenv("JWT_SECRET")
 ####################################### ONLY NEEDED IF STORING IN AZURE DATA LAKE STORAGE #######################################
  
 # STORAGE_ACCOUNT_NAME = os.getenv("STORAGE_ACCOUNT_NAME")
