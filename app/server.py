@@ -5,7 +5,7 @@ from pdf_converter import add_pdf_to_vectorstore
 import os
 from werkzeug.utils import secure_filename
 from werkzeug.security import generate_password_hash, check_password_hash
-from db.conection import get_db_connection, execute_query, close_connection  
+from app.db.connection import get_db_connection, execute_query, close_connection  
 from db.queries.users import (
     create_new_user_query,
     get_all_users_query,
@@ -428,4 +428,4 @@ def refresh_token():
         return error_response, 500
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=8080)
+    app.run(debug=True, host='0.0.0.0', port=8123)
