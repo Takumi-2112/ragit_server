@@ -5,7 +5,8 @@ from pdf_converter import add_pdf_to_vectorstore
 import os
 from werkzeug.utils import secure_filename
 from werkzeug.security import generate_password_hash, check_password_hash
-from app.db.connection import get_db_connection, execute_query, close_connection  
+from config import JWT_SECRET
+from db.connection import get_db_connection, execute_query, close_connection  
 from db.queries.users import (
     create_new_user_query,
     get_all_users_query,
@@ -18,6 +19,12 @@ from db.queries.users import (
     update_user_email_and_password_query,
     delete_user_query
 )
+from db.queries.chats import (
+    create_new_chat_message_query,
+    get_all_chats_by_user_query,
+    get_last_message_order_by_user_query,
+    delete_all_chats_by_user_query
+)
 
 # JWT imports
 import jwt
@@ -26,8 +33,6 @@ from functools import wraps
 
 app = Flask(__name__)
 
-# JWT Configuration (use environment variable in production)
-JWT_SECRET = "your-secret-key-here"  # Move to config.py or .env in production
 
 # Configure CORS properly
 CORS(
@@ -94,6 +99,42 @@ def require_auth(f):
         
         return f(*args, **kwargs)
     return decorated_function
+
+def save_chat_message(user_id, message_text, sender):
+    """Save a single chat message to the database"""
+    try:
+        # Get the last message order for this user
+        last_order_query = get_last_message_order_by_user_query()
+        result = execute_query(last_order_query, params=(user_id,), fetch_one=True)
+        next_order = (result['last_order'] if result and result['last_order'] else 0) + 1
+        
+        # Save the message
+        query = create_new_chat_message_query()
+        execute_query(query, params=(user_id, message_text, sender, next_order))
+        return True
+    except Exception as e:
+        print(f"Error saving chat message: {str(e)}")
+        return False
+
+def get_user_chat_history(user_id):
+    """Retrieve all chat messages for a user"""
+    try:
+        query = get_all_chats_by_user_query()
+        messages = execute_query(query, params=(user_id,), fetch_all=True)
+        
+        # Convert to the format expected by the frontend
+        chat_history = []
+        if messages:
+            for msg in messages:
+                chat_history.append({
+                    "sender": msg['sender'],
+                    "text": msg['message_text']
+                })
+        
+        return chat_history
+    except Exception as e:
+        print(f"Error retrieving chat history: {str(e)}")
+        return []
 
 @app.route('/')
 def home():
@@ -164,6 +205,9 @@ def register_user():
             """
             execute_query(update_query, params=(actual_vectorstore_path, user_id))
             
+            # Add initial bot message to chat history
+            save_chat_message(user_id, "Hello! How can I assist you today?", "bot")
+            
             # Generate JWT token for immediate login
             token = generate_jwt_token(user_id, username)
             
@@ -224,12 +268,16 @@ def login_user():
         # Generate JWT token
         token = generate_jwt_token(user['id'], user['username'])
         
+        # Get user's chat history
+        chat_history = get_user_chat_history(user['id'])
+        
         # Successful login
         success_response = jsonify({
             "message": "Login successful",
             "token": token,
             "user_id": user['id'],
-            "username": user['username']
+            "username": user['username'],
+            "chat_history": chat_history
         })
         success_response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
         return success_response, 200
@@ -237,6 +285,66 @@ def login_user():
     except Exception as e:
         print(f"Error during login: {str(e)}")
         error_response = jsonify({"error": "Login failed due to server error"})
+        error_response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
+        return error_response, 500
+
+@app.route('/chat-history', methods=['GET', 'OPTIONS'])
+@require_auth
+def get_chat_history():
+    if request.method == 'OPTIONS':
+        response = jsonify({"status": "preflight"})
+        response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'GET, OPTIONS')
+        return response
+    
+    try:
+        user_id = request.user_id
+        chat_history = get_user_chat_history(user_id)
+        
+        response = jsonify({
+            "chat_history": chat_history,
+            "status": "success"
+        })
+        response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
+        return response, 200
+        
+    except Exception as e:
+        print(f"Error retrieving chat history: {str(e)}")
+        error_response = jsonify({"error": "Failed to retrieve chat history"})
+        error_response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
+        return error_response, 500
+
+@app.route('/clear-chat', methods=['POST', 'OPTIONS'])
+@require_auth
+def clear_chat():
+    if request.method == 'OPTIONS':
+        response = jsonify({"status": "preflight"})
+        response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
+        return response
+    
+    try:
+        user_id = request.user_id
+        
+        # Clear all chat messages for this user
+        query = delete_all_chats_by_user_query()
+        execute_query(query, params=(user_id,))
+        
+        # Add initial bot message
+        save_chat_message(user_id, "Hello! How can I assist you today?", "bot")
+        
+        response = jsonify({
+            "message": "Chat history cleared successfully",
+            "status": "success"
+        })
+        response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
+        return response, 200
+        
+    except Exception as e:
+        print(f"Error clearing chat history: {str(e)}")
+        error_response = jsonify({"error": "Failed to clear chat history"})
         error_response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
         return error_response, 500
 
@@ -357,11 +465,16 @@ def message():
         return error_response, 400
 
     user_message = data['message']
-    # Use user_id from JWT token instead of request body
     user_id = request.user_id
+
+    # Save user message to database
+    save_chat_message(user_id, user_message, "user")
 
     # Send message to AI setup function with user_id
     ai_response = chatbot_talk(user_message, user_id)
+
+    # Save AI response to database
+    save_chat_message(user_id, ai_response, "bot")
 
     response = jsonify({
         "message": ai_response

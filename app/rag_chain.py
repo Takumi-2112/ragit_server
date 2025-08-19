@@ -19,6 +19,8 @@ from config import (
     AZURE_OPENAI_EMBEDDINGS_ENDPOINT,
     AZURE_OPENAI_EMBEDDINGS_DEPLOYMENT_NAME
 )
+from db.connection import get_db_connection, execute_query, close_connection
+from db.queries.chats import get_all_chats_by_user_query
 
 # Create an AzureOpenAIEmbeddings instance
 embeddings = AzureOpenAIEmbeddings(
@@ -38,7 +40,7 @@ model = AzureChatOpenAI(
     model="gpt-4o"
 )
 
-# Store chat histories per user
+# Store chat histories per user (in-memory cache)
 user_chat_histories = {}
 
 # Contextualize question prompt
@@ -129,13 +131,46 @@ def get_user_vectorstore(user_id):
     
     return vectorstore
 
+def get_user_chat_history_from_db(user_id):
+    """
+    Get chat history for a specific user from the database and convert to LangChain format
+    """
+    try:
+        query = get_all_chats_by_user_query()
+        messages = execute_query(query, params=(user_id,), fetch_all=True)
+        
+        # Convert to LangChain message format
+        chat_history = []
+        if messages:
+            for msg in messages:
+                if msg['sender'] == 'user':
+                    chat_history.append(HumanMessage(content=msg['message_text']))
+                else:
+                    chat_history.append(SystemMessage(content=msg['message_text']))
+        
+        return chat_history
+    except Exception as e:
+        print(f"Error retrieving chat history from DB: {str(e)}")
+        return []
+
 def get_user_chat_history(user_id):
     """
-    Get or create chat history for a specific user
+    Get or create chat history for a specific user from database cache
+    """
+    if user_id not in user_chat_histories:
+        # Load from database
+        user_chat_histories[user_id] = get_user_chat_history_from_db(user_id)
+    return user_chat_histories[user_id]
+
+def update_user_chat_history_cache(user_id, human_message, system_message):
+    """
+    Update the in-memory chat history cache
     """
     if user_id not in user_chat_histories:
         user_chat_histories[user_id] = []
-    return user_chat_histories[user_id]
+    
+    user_chat_histories[user_id].append(HumanMessage(content=human_message))
+    user_chat_histories[user_id].append(SystemMessage(content=system_message))
 
 def create_rag_chain_for_user(user_id):
     """
@@ -192,13 +227,11 @@ def url_to_vectorstore(url, user_id):
     print(f"Successfully added content from {url} to user {user_id}'s vectorstore.")
     return True
 
-
-
 def chatbot_talk(prompt, user_id):
     """
     Process a chat message for a specific user
     """
-    # Get the user's chat history
+    # Get the user's chat history from cache/database
     chat_history = get_user_chat_history(user_id)
     
     # Create RAG chain for this user
@@ -213,16 +246,21 @@ def chatbot_talk(prompt, user_id):
     # Display the AI's response (for debugging)
     print(f"\nAI response for user {user_id}: {clean_response}\n")
 
-    # Update the user's chat history
-    chat_history.append(HumanMessage(content=prompt))
-    chat_history.append(SystemMessage(content=result["answer"]))
+    # Update the user's chat history cache
+    # Note: The actual database saving is handled in server.py
+    update_user_chat_history_cache(user_id, prompt, result["answer"])
     
     return clean_response
 
-
+def clear_user_chat_history_cache(user_id):
+    """
+    Clear the in-memory chat history cache for a user
+    """
+    if user_id in user_chat_histories:
+        user_chat_histories[user_id] = []
 
 # Export functions for use in server.py
-__all__ = ['chatbot_talk', 'url_to_vectorstore', 'get_user_vectorstore']
+__all__ = ['chatbot_talk', 'url_to_vectorstore', 'get_user_vectorstore', 'clear_user_chat_history_cache']
 
 # Entry point for standalone usage
 if __name__ == "__main__":
