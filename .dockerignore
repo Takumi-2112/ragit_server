@@ -1,0 +1,45 @@
+# From your .gitignore
+.env
+pdf
+venv
+markdown
+__pycache__
+db
+
+# Additional Docker-specific exclusions
+.git
+.gitignore
+*.pyc
+*.pyo
+*.pyd
+.Python
+.DS_Store
+.vscode
+.idea
+*.log
+node_modules
+.pytest_cache
+.coverage
+*.egg-info
+dist
+build
+README.md
+*.md
+.dockerignore
+Dockerfile
+
+# OS-specific files
+Thumbs.db
+.DS_Store
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Test files
+tests/
+test/
+.pytest_cache/
+.tox/
