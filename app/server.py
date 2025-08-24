@@ -13,11 +13,13 @@ from db.queries.users import (
     get_user_by_id_query,
     get_user_by_username_query,
     get_user_by_email_query,
+    get_user_login_query,
     get_newest_user_query,
     update_user_email_query,
     update_user_password_query,
     update_user_email_and_password_query,
     delete_user_query
+    
 )
 from db.queries.chats import (
     create_new_chat_message_query,
@@ -32,7 +34,6 @@ from datetime import datetime, timedelta
 from functools import wraps
 
 app = Flask(__name__)
-
 
 # Configure CORS properly
 CORS(
@@ -113,7 +114,7 @@ def save_chat_message(user_id, message_text, sender):
         execute_query(query, params=(user_id, message_text, sender, next_order))
         return True
     except Exception as e:
-        print(f"Error saving chat message: {str(e)}")
+        # print(f"Error saving chat message: {str(e)}")
         return False
 
 def get_user_chat_history(user_id):
@@ -133,7 +134,7 @@ def get_user_chat_history(user_id):
         
         return chat_history
     except Exception as e:
-        print(f"Error retrieving chat history: {str(e)}")
+        # print(f"Error retrieving chat history: {str(e)}")
         return []
 
 @app.route('/')
@@ -142,93 +143,58 @@ def home():
   
 @app.route('/register', methods=['POST', 'OPTIONS'])
 def register_user():
-    # Handle preflight requests
     if request.method == 'OPTIONS':
         response = jsonify({"status": "preflight"})
         response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
         response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
         response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
         return response
-    
+
     try:
         data = request.get_json()
         
         if not data or 'username' not in data or 'email' not in data or 'password' not in data:
-            error_response = jsonify({"error": "Missing required fields: username, email, password"})
-            error_response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
-            return error_response, 400
-        
+            return jsonify({"error": "Missing required fields"}), 400
+
         username = data['username'].strip()
         email = data['email'].strip().lower()
         password = data['password']
-        
-        # Check if username already exists
-        existing_username_query = get_user_by_username_query()
-        existing_user = execute_query(existing_username_query, params=(username,), fetch_one=True)
+
+        # check if user/email exists
+        existing_user = execute_query(get_user_by_username_query(), params=(username,), fetch_one=True)
         if existing_user:
-            error_response = jsonify({"error": "Username already exists"})
-            error_response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
-            return error_response, 409
-        
-        # Check if email already exists
-        existing_email_query = get_user_by_email_query()
-        existing_email = execute_query(existing_email_query, params=(email,), fetch_one=True)
+            return jsonify({"error": "Username already exists"}), 409
+
+        existing_email = execute_query(get_user_by_email_query(), params=(email,), fetch_one=True)
         if existing_email:
-            error_response = jsonify({"error": "Email already exists"})
-            error_response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
-            return error_response, 409
-        
-        # Hash the password
-        password_hash = generate_password_hash(password)
-        
-        # Create vectorstore path for the new user
+            return jsonify({"error": "Email already exists"}), 409
+
+        # hash password
+        password_hash = generate_password_hash(password, method='pbkdf2:sha256', salt_length=8)
+
+        # temp vectorstore path
         temp_vectorstore_path = f"db/vectorstores/temp_user_vectorstore"
-        
-        # Create new user in the database
-        query = create_new_user_query()
-        result = execute_query(query, params=(username, email, password_hash, temp_vectorstore_path), fetch_one=True)
-        
-        if result and 'id' in result:
-            user_id = result['id']
-            
-            # Update vectorstore path with actual user ID
-            actual_vectorstore_path = f"db/vectorstores/user_{user_id}_vectorstore"
-            
-            # Create the vectorstore directory
-            current_dir = os.path.dirname(os.path.abspath(__file__))
-            vectorstore_full_path = os.path.join(current_dir, actual_vectorstore_path)
-            os.makedirs(vectorstore_full_path, exist_ok=True)
-            
-            # Update user record with correct vectorstore path
-            update_query = """
-            UPDATE users SET vectorstore_path = %s WHERE id = %s
-            """
-            execute_query(update_query, params=(actual_vectorstore_path, user_id))
-            
-            # Add initial bot message to chat history
-            save_chat_message(user_id, "Hello! How can I assist you today?", "bot")
-            
-            # Generate JWT token for immediate login
-            token = generate_jwt_token(user_id, username)
-            
-            success_response = jsonify({
-                "message": "User registered successfully",
-                "token": token,
-                "user_id": user_id,
-                "username": username
-            })
-            success_response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
-            return success_response, 201
-        else:
-            error_response = jsonify({"error": "Failed to create user"})
-            error_response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
-            return error_response, 500
-            
+
+        # create user
+        result = execute_query(create_new_user_query(), params=(username, email, password_hash, temp_vectorstore_path), fetch_one=True)
+        user_id = result['id']
+
+        # final vectorstore path
+        actual_vectorstore_path = f"db/vectorstores/user_{user_id}_vectorstore"
+        os.makedirs(actual_vectorstore_path, exist_ok=True)
+
+        execute_query("UPDATE users SET vectorstore_path=%s WHERE id=%s", params=(actual_vectorstore_path, user_id))
+
+        # initial chat message
+        save_chat_message(user_id, "Hello! How can I assist you today?", "bot")
+
+        token = generate_jwt_token(user_id, username)
+
+        return jsonify({"message":"User registered successfully", "token":token, "user_id":user_id, "username":username}), 201
+
     except Exception as e:
-        print(f"Error registering user: {str(e)}")
-        error_response = jsonify({"error": "Registration failed due to server error"})
-        error_response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
-        return error_response, 500
+        # print(e)
+        return jsonify({"error": "Registration failed"}), 500
 
 @app.route('/login', methods=['POST', 'OPTIONS'])
 def login_user():
@@ -238,55 +204,29 @@ def login_user():
         response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
         response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
         return response
-    
+
     try:
         data = request.get_json()
-        
+        # print("Received data:", data)
         if not data or 'username' not in data or 'password' not in data:
-            error_response = jsonify({"error": "Missing required fields: username, password"})
-            error_response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
-            return error_response, 400
-        
+            return jsonify({"error": "Missing required fields"}), 400
+
         username = data['username'].strip()
         password = data['password']
-        
-        # Fetch user by username
-        user_query = get_user_by_username_query()
-        user = execute_query(user_query, params=(username,), fetch_one=True)
-        
-        if not user:
-            error_response = jsonify({"error": "Invalid username or password"})
-            error_response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
-            return error_response, 401
-        
-        # Verify password
-        if not check_password_hash(user['password_hash'], password):
-            error_response = jsonify({"error": "Invalid username or password"})
-            error_response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
-            return error_response, 401
-        
-        # Generate JWT token
+
+        user = execute_query(get_user_login_query(), params=(username,), fetch_one=True)
+        if not user or not check_password_hash(user['password_hash'], password):
+            return jsonify({"error": "Invalid username or password"}), 401
+
         token = generate_jwt_token(user['id'], user['username'])
-        
-        # Get user's chat history
         chat_history = get_user_chat_history(user['id'])
-        
-        # Successful login
-        success_response = jsonify({
-            "message": "Login successful",
-            "token": token,
-            "user_id": user['id'],
-            "username": user['username'],
-            "chat_history": chat_history
-        })
-        success_response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
-        return success_response, 200
-        
+
+        return jsonify({"message":"Login successful", "token":token, "user_id":user['id'], "username":user['username'], "chat_history":chat_history}), 200
+
     except Exception as e:
-        print(f"Error during login: {str(e)}")
-        error_response = jsonify({"error": "Login failed due to server error"})
-        error_response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
-        return error_response, 500
+        # print(e)
+        return jsonify({"error": "Login failed"}), 500
+
 
 @app.route('/chat-history', methods=['GET', 'OPTIONS'])
 @require_auth
@@ -310,7 +250,7 @@ def get_chat_history():
         return response, 200
         
     except Exception as e:
-        print(f"Error retrieving chat history: {str(e)}")
+        # print(f"Error retrieving chat history: {str(e)}")
         error_response = jsonify({"error": "Failed to retrieve chat history"})
         error_response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
         return error_response, 500
@@ -343,7 +283,7 @@ def clear_chat():
         return response, 200
         
     except Exception as e:
-        print(f"Error clearing chat history: {str(e)}")
+        # print(f"Error clearing chat history: {str(e)}")
         error_response = jsonify({"error": "Failed to clear chat history"})
         error_response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
         return error_response, 500
@@ -383,7 +323,7 @@ def upload_pdf():
         
         # Save the file
         file.save(file_path)
-        print(f"PDF saved to: {file_path}")
+        # print(f"PDF saved to: {file_path}")
         
         # Use user_id from JWT token
         user_id = request.user_id
@@ -406,7 +346,7 @@ def upload_pdf():
         return response, 200
         
     except Exception as e:
-        print(f"Upload error: {str(e)}")
+        # print(f"Upload error: {str(e)}")
         error_response = jsonify({'error': f'Upload failed: {str(e)}'})
         error_response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
         return error_response, 500
@@ -449,7 +389,7 @@ def ingest_url():
         return response, 200
         
     except Exception as e:
-        print(f"Error processing URL: {str(e)}")
+        # print(f"Error processing URL: {str(e)}")
         error_response = jsonify({'error': f'Failed to process URL: {str(e)}'})
         error_response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
         return error_response, 500
@@ -507,7 +447,7 @@ def logout():
         return response, 200
         
     except Exception as e:
-        print(f"Error during logout: {str(e)}")
+        # print(f"Error during logout: {str(e)}")
         error_response = jsonify({"error": "Logout failed due to server error"})
         error_response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
         return error_response, 500
@@ -535,7 +475,7 @@ def refresh_token():
         return response, 200
         
     except Exception as e:
-        print(f"Error refreshing token: {str(e)}")
+        # print(f"Error refreshing token: {str(e)}")
         error_response = jsonify({"error": "Token refresh failed"})
         error_response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
         return error_response, 500

@@ -1,5 +1,4 @@
 ## CREATE
-
 def create_new_user_query():
     return """
     INSERT INTO users (username, email, password_hash, vectorstore_path, created_at, updated_at)
@@ -7,9 +6,7 @@ def create_new_user_query():
     RETURNING id;
     """
 
-
 ## READ
-
 def get_all_users_query():
     return """
     SELECT id, username, email, vectorstore_path, created_at, updated_at 
@@ -18,21 +15,29 @@ def get_all_users_query():
 
 def get_user_by_id_query():
     return """
-    SELECT id, username, email, password_hash, vectorstore_path, created_at, updated_at
+    SELECT id, username, email, vectorstore_path, created_at, updated_at
     FROM users WHERE id = %s
     """
 
-
+# **Used for normal display, never return password_hash**
 def get_user_by_username_query():
     return """
     SELECT id, username, email, password_hash, vectorstore_path, created_at, updated_at
-    FROM users WHERE username = %s
+    FROM users 
+    WHERE username = %s
     """
 
 def get_user_by_email_query():
     return """
-    SELECT id, username, email, password_hash, vectorstore_path, created_at, updated_at
+    SELECT id, username, email, vectorstore_path, created_at, updated_at
     FROM users WHERE email = %s
+    """
+
+def get_user_login_query():
+    return """
+    SELECT id, username, password_hash
+    FROM users
+    WHERE username = %s
     """
 
 def get_newest_user_query():
@@ -40,9 +45,7 @@ def get_newest_user_query():
     SELECT * FROM users ORDER BY created_at DESC LIMIT 10
     """
 
-
 ## UPDATE
-
 def update_user_email_query():
     return """
     UPDATE users 
@@ -65,7 +68,6 @@ def update_user_email_and_password_query():
     """
 
 ## DELETE
-
 def delete_user_query():
     return """
     DELETE FROM users WHERE id = %s
