@@ -160,7 +160,14 @@ def register_user():
         email = data['email'].strip().lower()
         password = data['password']
 
-        # check if user/email exists
+        # Basic validation
+        if len(username) < 3:
+            return jsonify({"error": "Username must be at least 3 characters long"}), 400
+        
+        if len(password) < 6:
+            return jsonify({"error": "Password must be at least 6 characters long"}), 400
+
+        # Check if user/email exists
         existing_user = execute_query(get_user_by_username_query(), params=(username,), fetch_one=True)
         if existing_user:
             return jsonify({"error": "Username already exists"}), 409
@@ -169,32 +176,38 @@ def register_user():
         if existing_email:
             return jsonify({"error": "Email already exists"}), 409
 
-        # hash password
+        # Hash password - this is the key security step
         password_hash = generate_password_hash(password, method='pbkdf2:sha256', salt_length=8)
 
-        # temp vectorstore path
-        temp_vectorstore_path = f"db/vectorstores/temp_user_vectorstore"
-
-        # create user
-        result = execute_query(create_new_user_query(), params=(username, email, password_hash, temp_vectorstore_path), fetch_one=True)
+        # Create user with hashed password (never store plain text password)
+        result = execute_query(create_new_user_query(), params=(username, email, password_hash, "temp_path"), fetch_one=True)
         user_id = result['id']
 
-        # final vectorstore path
+        # Update vectorstore path
         actual_vectorstore_path = f"db/vectorstores/user_{user_id}_vectorstore"
         os.makedirs(actual_vectorstore_path, exist_ok=True)
-
         execute_query("UPDATE users SET vectorstore_path=%s WHERE id=%s", params=(actual_vectorstore_path, user_id))
 
-        # initial chat message
+        # Initial chat message
         save_chat_message(user_id, "Hello! How can I assist you today?", "bot")
 
+        # Generate JWT token
         token = generate_jwt_token(user_id, username)
 
-        return jsonify({"message":"User registered successfully", "token":token, "user_id":user_id, "username":username}), 201
+        response = jsonify({
+            "message": "User registered successfully", 
+            "token": token, 
+            "user_id": user_id, 
+            "username": username
+        })
+        response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
+        return response, 201
 
     except Exception as e:
-        # print(e)
-        return jsonify({"error": "Registration failed"}), 500
+        print(f"Registration error: {e}")  # Enable for debugging
+        error_response = jsonify({"error": "Registration failed"})
+        error_response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
+        return error_response, 500
 
 @app.route('/login', methods=['POST', 'OPTIONS'])
 def login_user():
@@ -207,25 +220,42 @@ def login_user():
 
     try:
         data = request.get_json()
-        # print("Received data:", data)
+        
         if not data or 'username' not in data or 'password' not in data:
             return jsonify({"error": "Missing required fields"}), 400
 
         username = data['username'].strip()
-        password = data['password']
+        password = data['password']  # Plain text password from frontend
 
+        # Get user data including password hash
         user = execute_query(get_user_login_query(), params=(username,), fetch_one=True)
+        
+        # Check if user exists and password is correct
+        # check_password_hash compares plain text password with stored hash
         if not user or not check_password_hash(user['password_hash'], password):
             return jsonify({"error": "Invalid username or password"}), 401
 
+        # Generate JWT token for successful login
         token = generate_jwt_token(user['id'], user['username'])
+        
+        # Get user's chat history
         chat_history = get_user_chat_history(user['id'])
 
-        return jsonify({"message":"Login successful", "token":token, "user_id":user['id'], "username":user['username'], "chat_history":chat_history}), 200
+        response = jsonify({
+            "message": "Login successful", 
+            "token": token, 
+            "user_id": user['id'], 
+            "username": user['username'], 
+            "chat_history": chat_history
+        })
+        response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
+        return response, 200
 
     except Exception as e:
-        # print(e)
-        return jsonify({"error": "Login failed"}), 500
+        print(f"Login error: {e}")  # Enable for debugging
+        error_response = jsonify({"error": "Login failed"})
+        error_response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
+        return error_response, 500
 
 
 @app.route('/chat-history', methods=['GET', 'OPTIONS'])
