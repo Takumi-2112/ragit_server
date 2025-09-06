@@ -35,17 +35,38 @@ from functools import wraps
 
 app = Flask(__name__)
 
-# Configure CORS properly
+# Configure CORS for both development and production
 CORS(
     app,
     resources={
         r"/*": {
-            "origins": ["http://localhost:5173"],
+            "origins": [
+                "http://localhost:5173",  # Development
+                "http://127.0.0.1:5173",  # Development alternative
+                "https://ragit.netlify.app"  # Production
+            ],
             "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-            "allow_headers": ["Content-Type", "Authorization"]
+            "allow_headers": ["Content-Type", "Authorization"],
+            "supports_credentials": True
         }
     }
 )
+
+# Helper function for CORS headers
+def get_cors_origin():
+    """Get appropriate CORS origin based on request"""
+    origin = request.headers.get('Origin')
+    allowed_origins = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173", 
+        "https://ragit.netlify.app"
+    ]
+    
+    if origin in allowed_origins:
+        return origin
+    
+    # Default fallback
+    return "https://ragit.netlify.app"
 
 # JWT Helper Functions
 def generate_jwt_token(user_id, username):
@@ -74,7 +95,7 @@ def require_auth(f):
         # Handle OPTIONS requests for CORS
         if request.method == 'OPTIONS':
             response = jsonify({"status": "preflight"})
-            response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
+            response.headers.add('Access-Control-Allow-Origin', get_cors_origin())
             response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
             response.headers.add('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
             return response
@@ -83,7 +104,7 @@ def require_auth(f):
         auth_header = request.headers.get('Authorization')
         if not auth_header or not auth_header.startswith('Bearer '):
             error_response = jsonify({"error": "Authentication required"})
-            error_response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
+            error_response.headers.add('Access-Control-Allow-Origin', get_cors_origin())
             return error_response, 401
         
         token = auth_header.split(' ')[1]
@@ -91,7 +112,7 @@ def require_auth(f):
         
         if not payload:
             error_response = jsonify({"error": "Invalid or expired token"})
-            error_response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
+            error_response.headers.add('Access-Control-Allow-Origin', get_cors_origin())
             return error_response, 401
         
         # Add user info to request context
@@ -114,7 +135,7 @@ def save_chat_message(user_id, message_text, sender):
         execute_query(query, params=(user_id, message_text, sender, next_order))
         return True
     except Exception as e:
-        # print(f"Error saving chat message: {str(e)}")
+        print(f"Error saving chat message: {str(e)}")
         return False
 
 def get_user_chat_history(user_id):
@@ -134,7 +155,7 @@ def get_user_chat_history(user_id):
         
         return chat_history
     except Exception as e:
-        # print(f"Error retrieving chat history: {str(e)}")
+        print(f"Error retrieving chat history: {str(e)}")
         return []
 
 @app.route('/')
@@ -145,7 +166,7 @@ def home():
 def register_user():
     if request.method == 'OPTIONS':
         response = jsonify({"status": "preflight"})
-        response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
+        response.headers.add('Access-Control-Allow-Origin', get_cors_origin())
         response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
         response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
         return response
@@ -200,20 +221,20 @@ def register_user():
             "user_id": user_id, 
             "username": username
         })
-        response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
+        response.headers.add('Access-Control-Allow-Origin', get_cors_origin())
         return response, 201
 
     except Exception as e:
-        print(f"Registration error: {e}")  # Enable for debugging
+        print(f"Registration error: {e}")
         error_response = jsonify({"error": "Registration failed"})
-        error_response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
+        error_response.headers.add('Access-Control-Allow-Origin', get_cors_origin())
         return error_response, 500
 
 @app.route('/login', methods=['POST', 'OPTIONS'])
 def login_user():
     if request.method == 'OPTIONS':
         response = jsonify({"status": "preflight"})
-        response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
+        response.headers.add('Access-Control-Allow-Origin', get_cors_origin())
         response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
         response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
         return response
@@ -248,22 +269,21 @@ def login_user():
             "username": user['username'], 
             "chat_history": chat_history
         })
-        response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
+        response.headers.add('Access-Control-Allow-Origin', get_cors_origin())
         return response, 200
 
     except Exception as e:
-        print(f"Login error: {e}")  # Enable for debugging
+        print(f"Login error: {e}")
         error_response = jsonify({"error": "Login failed"})
-        error_response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
+        error_response.headers.add('Access-Control-Allow-Origin', get_cors_origin())
         return error_response, 500
-
 
 @app.route('/chat-history', methods=['GET', 'OPTIONS'])
 @require_auth
 def get_chat_history():
     if request.method == 'OPTIONS':
         response = jsonify({"status": "preflight"})
-        response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
+        response.headers.add('Access-Control-Allow-Origin', get_cors_origin())
         response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
         response.headers.add('Access-Control-Allow-Methods', 'GET, OPTIONS')
         return response
@@ -276,13 +296,13 @@ def get_chat_history():
             "chat_history": chat_history,
             "status": "success"
         })
-        response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
+        response.headers.add('Access-Control-Allow-Origin', get_cors_origin())
         return response, 200
         
     except Exception as e:
-        # print(f"Error retrieving chat history: {str(e)}")
+        print(f"Error retrieving chat history: {str(e)}")
         error_response = jsonify({"error": "Failed to retrieve chat history"})
-        error_response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
+        error_response.headers.add('Access-Control-Allow-Origin', get_cors_origin())
         return error_response, 500
 
 @app.route('/clear-chat', methods=['POST', 'OPTIONS'])
@@ -290,7 +310,7 @@ def get_chat_history():
 def clear_chat():
     if request.method == 'OPTIONS':
         response = jsonify({"status": "preflight"})
-        response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
+        response.headers.add('Access-Control-Allow-Origin', get_cors_origin())
         response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
         response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
         return response
@@ -309,13 +329,13 @@ def clear_chat():
             "message": "Chat history cleared successfully",
             "status": "success"
         })
-        response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
+        response.headers.add('Access-Control-Allow-Origin', get_cors_origin())
         return response, 200
         
     except Exception as e:
-        # print(f"Error clearing chat history: {str(e)}")
+        print(f"Error clearing chat history: {str(e)}")
         error_response = jsonify({"error": "Failed to clear chat history"})
-        error_response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
+        error_response.headers.add('Access-Control-Allow-Origin', get_cors_origin())
         return error_response, 500
 
 @app.route('/upload-pdf', methods=['POST', 'OPTIONS'])
@@ -325,7 +345,7 @@ def upload_pdf():
         # Check if file is in the request
         if 'file' not in request.files:
             error_response = jsonify({'error': 'No file provided'})
-            error_response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
+            error_response.headers.add('Access-Control-Allow-Origin', get_cors_origin())
             return error_response, 400
         
         file = request.files['file']
@@ -333,13 +353,13 @@ def upload_pdf():
         # Check if file was actually selected
         if file.filename == '':
             error_response = jsonify({'error': 'No file selected'})
-            error_response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
+            error_response.headers.add('Access-Control-Allow-Origin', get_cors_origin())
             return error_response, 400
         
         # Check if it's a PDF file
         if not file.filename.lower().endswith('.pdf'):
             error_response = jsonify({'error': 'File must be a PDF'})
-            error_response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
+            error_response.headers.add('Access-Control-Allow-Origin', get_cors_origin())
             return error_response, 400
         
         # Create pdf folder if it doesn't exist
@@ -353,7 +373,7 @@ def upload_pdf():
         
         # Save the file
         file.save(file_path)
-        # print(f"PDF saved to: {file_path}")
+        print(f"PDF saved to: {file_path}")
         
         # Use user_id from JWT token
         user_id = request.user_id
@@ -372,13 +392,13 @@ def upload_pdf():
                 'status': 'partial_success'
             })
         
-        response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
+        response.headers.add('Access-Control-Allow-Origin', get_cors_origin())
         return response, 200
         
     except Exception as e:
-        # print(f"Upload error: {str(e)}")
+        print(f"Upload error: {str(e)}")
         error_response = jsonify({'error': f'Upload failed: {str(e)}'})
-        error_response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
+        error_response.headers.add('Access-Control-Allow-Origin', get_cors_origin())
         return error_response, 500
 
 @app.route('/ingest-url', methods=['POST', 'OPTIONS'])
@@ -391,13 +411,13 @@ def ingest_url():
         
         if not url:
             error_response = jsonify({'error': 'URL is required'})
-            error_response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
+            error_response.headers.add('Access-Control-Allow-Origin', get_cors_origin())
             return error_response, 400
         
         # Basic URL validation
         if not url.startswith(('http://', 'https://')):
             error_response = jsonify({'error': 'Invalid URL format. Must start with http:// or https://'})
-            error_response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
+            error_response.headers.add('Access-Control-Allow-Origin', get_cors_origin())
             return error_response, 400
         
         # Use user_id from JWT token
@@ -415,13 +435,13 @@ def ingest_url():
                 'url': url
             })
         
-        response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
+        response.headers.add('Access-Control-Allow-Origin', get_cors_origin())
         return response, 200
         
     except Exception as e:
-        # print(f"Error processing URL: {str(e)}")
+        print(f"Error processing URL: {str(e)}")
         error_response = jsonify({'error': f'Failed to process URL: {str(e)}'})
-        error_response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
+        error_response.headers.add('Access-Control-Allow-Origin', get_cors_origin())
         return error_response, 500
 
 @app.route('/message', methods=['POST', 'OPTIONS'])
@@ -431,7 +451,7 @@ def message():
 
     if not data or 'message' not in data:
         error_response = jsonify({"error": "No message provided"})
-        error_response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
+        error_response.headers.add('Access-Control-Allow-Origin', get_cors_origin())
         return error_response, 400
 
     user_message = data['message']
@@ -450,7 +470,7 @@ def message():
         "message": ai_response
     })
     
-    response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
+    response.headers.add('Access-Control-Allow-Origin', get_cors_origin())
     return response
 
 # Logout endpoint
@@ -459,7 +479,7 @@ def message():
 def logout():
     if request.method == 'OPTIONS':
         response = jsonify({"status": "preflight"})
-        response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
+        response.headers.add('Access-Control-Allow-Origin', get_cors_origin())
         response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
         response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
         return response
@@ -473,13 +493,13 @@ def logout():
             "message": f"User {username} logged out successfully",
             "status": "success"
         })
-        response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
+        response.headers.add('Access-Control-Allow-Origin', get_cors_origin())
         return response, 200
         
     except Exception as e:
-        # print(f"Error during logout: {str(e)}")
+        print(f"Error during logout: {str(e)}")
         error_response = jsonify({"error": "Logout failed due to server error"})
-        error_response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
+        error_response.headers.add('Access-Control-Allow-Origin', get_cors_origin())
         return error_response, 500
 
 # Optional: Add token refresh endpoint
@@ -488,7 +508,7 @@ def logout():
 def refresh_token():
     if request.method == 'OPTIONS':
         response = jsonify({"status": "preflight"})
-        response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
+        response.headers.add('Access-Control-Allow-Origin', get_cors_origin())
         response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
         response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
         return response
@@ -501,14 +521,14 @@ def refresh_token():
             "message": "Token refreshed successfully",
             "token": new_token
         })
-        response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
+        response.headers.add('Access-Control-Allow-Origin', get_cors_origin())
         return response, 200
         
     except Exception as e:
-        # print(f"Error refreshing token: {str(e)}")
+        print(f"Error refreshing token: {str(e)}")
         error_response = jsonify({"error": "Token refresh failed"})
-        error_response.headers.add('Access-Control-Allow-Origin', 'http://localhost:5173')
+        error_response.headers.add('Access-Control-Allow-Origin', get_cors_origin())
         return error_response, 500
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=8123)
+    app.run(debug=False, host='0.0.0.0', port=8123)  
